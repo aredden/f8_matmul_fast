@@ -1,0 +1,13 @@
+__pycache__
+
+times.json
+test_it.py
+nerp.py
+ttt/*
+.vscode/*
+build/*
+dist/*
+*.egg-info/*
+graph_times.py
+times.jpg
+times_notorch.jpg

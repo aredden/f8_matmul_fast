@@ -1,0 +1,9 @@
+#! /bin/bash
+
+rm -rf build
+rm -rf dist
+rm -rf f8_fast_matmul.egg-info
+rm -rf f8_fast_matmul_ext.egg-info
+rm -rf ./*/__pycache__
+rm -rf ./*/*.so
+rm -rf ./*/*.cpython*
