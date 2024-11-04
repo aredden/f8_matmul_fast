@@ -9,8 +9,6 @@
 #include <ATen/ATen.h>
 
 #define CDIV(a, b) ((a) + (b) - 1) / (b)
-// offset_x = (pid * block_h) % M
-// offset_y = ((pid * block_w) // N) * block_w
 
 __device__ __forceinline__ __nv_fp8_storage_t convert_to_fp8(float fvalue, int f8_dtype)
 {
@@ -56,6 +54,23 @@ __device__ __forceinline__ __nv_fp8x4_storage_t convert_to_fp8_4(float4 fvalue, 
         return reinterpret_cast<__nv_fp8x4_storage_t *>(temp_storage)[0];
     };
 }
+template <typename scalar_t>
+__device__ __forceinline__ float scale_and_clamp(scalar_t value, float scale, float max_value)
+{
+    return fminf(fmaxf(float(value) * scale, -max_value), max_value);
+}
+
+template <>
+__device__ __forceinline__ float scale_and_clamp(__nv_bfloat16 value, float scale, float max_value)
+{
+    return fminf(fmaxf(float(value) * scale, -max_value), max_value);
+}
+
+template <>
+__device__ __forceinline__ float scale_and_clamp(__half value, float scale, float max_value)
+{
+    return fminf(fmaxf(float(value) * scale, -max_value), max_value);
+}
 
 template <typename scalar_t>
 __global__ void quantize_fp8_forward_experimental(
@@ -92,20 +107,22 @@ __global__ void quantize_fp8_forward_experimental(
         else if (n_load == 2)
         {
             // load 2 values, since half precision
-            reinterpret_cast<float *>(values)[0] = reinterpret_cast<const float *>(input)[output_offset];
+            reinterpret_cast<float *>(values)[0] = reinterpret_cast<const float *>(input)[output_offset * (n_load / 2)];
             float quantized_value_0 = fminf(fmaxf(float(values[0]) * scale, -max_value), max_value);
             float quantized_value_1 = fminf(fmaxf(float(values[1]) * scale, -max_value), max_value);
-            reinterpret_cast<__nv_fp8x2_storage_t *>(output)[output_offset] = convert_to_fp8_2(make_float2(quantized_value_0, quantized_value_1), f8_dtype);
+            reinterpret_cast<__nv_fp8x2_storage_t *>(output)[output_offset * (n_load / 2)] = convert_to_fp8_2(make_float2(quantized_value_0, quantized_value_1), f8_dtype);
         }
         else if (n_load == 4)
         {
             // load 4 values, since float precision
-            reinterpret_cast<float2 *>(values)[0] = const_cast<float2 *>(reinterpret_cast<const float2 *>(input))[output_offset];
+            reinterpret_cast<float2 *>(values)[0] = const_cast<float2 *>(reinterpret_cast<const float2 *>(input))[output_offset * (n_load / 4)];
             float quantized_value_0 = fminf(fmaxf(float(values[0]) * scale, -max_value), max_value);
             float quantized_value_1 = fminf(fmaxf(float(values[1]) * scale, -max_value), max_value);
             float quantized_value_2 = fminf(fmaxf(float(values[2]) * scale, -max_value), max_value);
             float quantized_value_3 = fminf(fmaxf(float(values[3]) * scale, -max_value), max_value);
-            reinterpret_cast<__nv_fp8x4_storage_t *>(output)[output_offset] = convert_to_fp8_4(make_float4(quantized_value_0, quantized_value_1, quantized_value_2, quantized_value_3), f8_dtype, temp_storage);
+            temp_storage[0] = convert_to_fp8_2(make_float2(quantized_value_0, quantized_value_1), f8_dtype);
+            temp_storage[1] = convert_to_fp8_2(make_float2(quantized_value_2, quantized_value_3), f8_dtype);
+            reinterpret_cast<float *>(output)[output_offset * (n_load / 4)] = reinterpret_cast<float *>(temp_storage)[0];
         }
         else if (n_load > 4)
         {
@@ -113,14 +130,14 @@ __global__ void quantize_fp8_forward_experimental(
             for (int j = 0; j < n_load / 8; j += 1)
             {
                 reinterpret_cast<float4 *>(values)[0] = const_cast<float4 *>(reinterpret_cast<const float4 *>(input))[(output_offset * (n_load / 8)) + j];
-                float quantized_value_0 = fminf(fmaxf(float(values[0]) * scale, -max_value), max_value);
-                float quantized_value_1 = fminf(fmaxf(float(values[1]) * scale, -max_value), max_value);
-                float quantized_value_2 = fminf(fmaxf(float(values[2]) * scale, -max_value), max_value);
-                float quantized_value_3 = fminf(fmaxf(float(values[3]) * scale, -max_value), max_value);
-                float quantized_value_4 = fminf(fmaxf(float(values[4]) * scale, -max_value), max_value);
-                float quantized_value_5 = fminf(fmaxf(float(values[5]) * scale, -max_value), max_value);
-                float quantized_value_6 = fminf(fmaxf(float(values[6]) * scale, -max_value), max_value);
-                float quantized_value_7 = fminf(fmaxf(float(values[7]) * scale, -max_value), max_value);
+                float quantized_value_0 = scale_and_clamp<scalar_t>(values[0], scale, max_value);
+                float quantized_value_1 = scale_and_clamp<scalar_t>(values[1], scale, max_value);
+                float quantized_value_2 = scale_and_clamp<scalar_t>(values[2], scale, max_value);
+                float quantized_value_3 = scale_and_clamp<scalar_t>(values[3], scale, max_value);
+                float quantized_value_4 = scale_and_clamp<scalar_t>(values[4], scale, max_value);
+                float quantized_value_5 = scale_and_clamp<scalar_t>(values[5], scale, max_value);
+                float quantized_value_6 = scale_and_clamp<scalar_t>(values[6], scale, max_value);
+                float quantized_value_7 = scale_and_clamp<scalar_t>(values[7], scale, max_value);
                 temp_storage[0] = convert_to_fp8_2(make_float2(quantized_value_0, quantized_value_1), f8_dtype);
                 temp_storage[1] = convert_to_fp8_2(make_float2(quantized_value_2, quantized_value_3), f8_dtype);
                 temp_storage[2] = convert_to_fp8_2(make_float2(quantized_value_4, quantized_value_5), f8_dtype);
@@ -194,4 +211,42 @@ torch::Tensor quantize_fp8_forward_experimental(
     }
 
     return output;
+}
+
+torch::Tensor matmul_qfloat8(
+    const torch::Tensor a,
+    const torch::Tensor b_q,
+    const float a_scale,
+    const float a_max_value,
+    const float b_scale,
+    const ::std::optional<at::Tensor> &bias = {},
+    const ::std::optional<bool> use_fast_accum = false,
+    const int f8_dtype = 0)
+{
+    TORCH_CHECK(a.device().is_cuda(), "Input must be a CUDA tensor");
+    TORCH_CHECK(b_q.device().is_cuda(), "Input must be a CUDA tensor");
+    TORCH_CHECK(torch::ScalarType::Float8_e5m2 == b_q.scalar_type() || torch::ScalarType::Float8_e4m3fn == b_q.scalar_type(), "weight matrix must be a Float8_e5m2 or Float8_e4m3fn tensor");
+    TORCH_CHECK(a.scalar_type() == torch::ScalarType::BFloat16 || a.scalar_type() == torch::ScalarType::Half, "input must be a BFloat16 or Half tensor");
+    torch::ScalarType output_dtype = a.scalar_type();
+    auto a_q = quantize_fp8_forward_experimental(a, a_scale, a_max_value, f8_dtype, 8, 128);
+    return torch::_scaled_mm(a_q, b_q, torch::tensor(a_scale, a.device()).reciprocal(), torch::tensor(b_scale, b_q.device()).reciprocal(), bias, std::nullopt, output_dtype, use_fast_accum.value_or(false));
+}
+
+torch::Tensor matmul_qfloat8_tscales(
+    const torch::Tensor a,
+    const torch::Tensor b_q,
+    const torch::Tensor a_scale,
+    const torch::Tensor b_scale,
+    const torch::Tensor a_max_value,
+    const ::std::optional<at::Tensor> &bias = {},
+    const ::std::optional<bool> use_fast_accum = false,
+    const int f8_dtype = 0)
+{
+    TORCH_CHECK(a.device().is_cuda(), "Input must be a CUDA tensor");
+    TORCH_CHECK(b_q.device().is_cuda(), "Input must be a CUDA tensor");
+    TORCH_CHECK(torch::ScalarType::Float8_e5m2 == b_q.scalar_type() || torch::ScalarType::Float8_e4m3fn == b_q.scalar_type(), "weight matrix must be a Float8_e5m2 or Float8_e4m3fn tensor");
+    TORCH_CHECK(a.scalar_type() == torch::ScalarType::BFloat16 || a.scalar_type() == torch::ScalarType::Half, "input must be a BFloat16 or Half tensor");
+    torch::ScalarType output_dtype = a.scalar_type();
+    auto a_q = quantize_fp8_forward_experimental(a, a_scale.item<float>(), a_max_value.item<float>(), f8_dtype, 8, 128);
+    return torch::_scaled_mm(a_q, b_q, a_scale.reciprocal(), b_scale.reciprocal(), bias, std::nullopt, output_dtype, use_fast_accum.value_or(false));
 }
