@@ -72,7 +72,14 @@ torch::Tensor quantize_fp8_forward(
     int grid_size;
     int block_size = 1024;
 
-    output = torch::empty_like(input, torch::TensorOptions().device(input.device()).dtype(torch::ScalarType::Float8_e5m2));
+    if (f8_dtype == 0)
+    {
+        output = torch::empty_like(input, torch::TensorOptions().device(input.device()).dtype(torch::ScalarType::Float8_e5m2));
+    }
+    else
+    {
+        output = torch::empty_like(input, torch::TensorOptions().device(input.device()).dtype(torch::ScalarType::Float8_e4m3fn));
+    }
     grid_size = (M * N + block_size - 1) / block_size;
 
     if (input.scalar_type() == torch::ScalarType::Half)
